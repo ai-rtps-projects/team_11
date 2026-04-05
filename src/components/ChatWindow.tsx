@@ -8,6 +8,7 @@ import ThemeToggle from "./ThemeToggle";
 import { motion } from "framer-motion";
 import { GraduationCap, X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import admissionData from "@/data/admissionData.json";
 
 interface Message {
   role: "user" | "assistant";
@@ -17,6 +18,117 @@ interface Message {
 interface ChatWindowProps {
   onClose?: () => void;
 }
+
+interface AdmissionCourse {
+  name: string;
+  duration: string;
+  eligibility: string;
+  fees: string;
+}
+
+interface AdmissionDataset {
+  university: string;
+  courses: AdmissionCourse[];
+  admission: {
+    start_date: string;
+    end_date: string;
+    mode: string;
+  };
+  contact: {
+    phone: string;
+    email: string;
+  };
+}
+
+const admissionInfo = admissionData as AdmissionDataset;
+
+const getLocalAdmissionReply = (query: string): string | null => {
+  const q = query.toLowerCase();
+  const hasAny = (keywords: string[]) => keywords.some((k) => q.includes(k));
+
+  const isProcedureQuery = hasAny(["procedure", "process", "how to apply", "application", "admission steps"]);
+  if (isProcedureQuery) {
+    return [
+      `### Admission Procedure - ${admissionInfo.university}`,
+      "",
+      `- **Mode:** ${admissionInfo.admission.mode}`,
+      `- **Application Window:** ${admissionInfo.admission.start_date} to ${admissionInfo.admission.end_date}`,
+      "",
+      "#### Step-by-step process",
+      "1. Register on the admission portal.",
+      "2. Fill academic and personal details.",
+      "3. Upload required documents.",
+      "4. Pay the application fee.",
+      "5. Submit application and track status.",
+      "6. Attend counseling/verification if shortlisted.",
+      "",
+      "#### Required documents",
+      "- 10th and 12th marksheets",
+      "- Transfer certificate",
+      "- Government photo ID",
+      "- Passport-size photographs",
+      "- Category certificate (if applicable)",
+      "- Entrance scorecard (if applicable)",
+      "",
+      `For help, contact **${admissionInfo.contact.email}** or **${admissionInfo.contact.phone}**.`,
+    ].join("\n");
+  }
+
+  if (hasAny(["deadline", "last date", "admission date", "start date", "when do admissions start"])) {
+    return [
+      "### Admission Dates",
+      "",
+      `- **Start Date:** ${admissionInfo.admission.start_date}`,
+      `- **End Date:** ${admissionInfo.admission.end_date}`,
+      `- **Mode:** ${admissionInfo.admission.mode}`,
+    ].join("\n");
+  }
+
+  if (hasAny(["documents", "document required", "certificates"])) {
+    return [
+      "### Required Documents",
+      "",
+      "- 10th and 12th marksheets",
+      "- Transfer certificate",
+      "- Government photo ID",
+      "- Passport-size photographs",
+      "- Category certificate (if applicable)",
+      "- Entrance scorecard (if applicable)",
+    ].join("\n");
+  }
+
+  if (hasAny(["course", "program", "programs available"])) {
+    const courseLines = admissionInfo.courses.map(
+      (course) => `- **${course.name}** (${course.duration})`
+    );
+    return ["### Available Courses", "", ...courseLines].join("\n");
+  }
+
+  if (hasAny(["fee", "fees", "cost", "tuition"])) {
+    const feeLines = admissionInfo.courses.map(
+      (course) => `- **${course.name}:** ${course.fees}`
+    );
+    return ["### Fee Structure", "", ...feeLines].join("\n");
+  }
+
+  if (hasAny(["eligibility", "eligible", "criteria"])) {
+    const eligibilityLines = admissionInfo.courses.map(
+      (course) => `- **${course.name}:** ${course.eligibility}`
+    );
+    return ["### Eligibility Criteria", "", ...eligibilityLines].join("\n");
+  }
+
+  if (hasAny(["contact", "phone", "email"])) {
+    return [
+      "### Admission Contact",
+      "",
+      `- **Email:** ${admissionInfo.contact.email}`,
+      `- **Phone:** ${admissionInfo.contact.phone}`,
+    ].join("\n");
+  }
+
+  return null;
+};
 
 const WELCOME_MESSAGE = `Hi! 👋 I'm the **Meow University Admission Enquiries Assistant**.\n\nI can instantly help with **admission procedure, eligibility, deadlines, fees, and required documents**.`;
 
@@ -54,10 +166,18 @@ const ChatWindow = ({ onClose }: ChatWindowProps) => {
 
     const userMsg: Message = { role: "user", content };
     const newMessages = [...messages, userMsg];
-    const requestId = Date.now();
-
-    activeRequestRef.current = requestId;
     setMessages(newMessages);
+
+    const localReply = getLocalAdmissionReply(content);
+    if (localReply) {
+      const assistantMsg: Message = { role: "assistant", content: localReply };
+      setMessages([...newMessages, assistantMsg]);
+      saveToHistory(content, localReply);
+      return;
+    }
+
+    const requestId = Date.now();
+    activeRequestRef.current = requestId;
     setIsLoading(true);
 
     try {
