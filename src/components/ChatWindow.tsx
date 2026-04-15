@@ -1,5 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { useRef, useEffect, useState } from "react";
 import MessageBubble from "./MessageBubble";
 import TypingIndicator from "./TypingIndicator";
 import InputBox from "./InputBox";
@@ -17,6 +16,14 @@ interface Message {
 
 interface ChatWindowProps {
   onClose?: () => void;
+}
+
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string }>;
+    };
+  }>;
 }
 
 interface AdmissionCourse {
@@ -41,6 +48,32 @@ interface AdmissionDataset {
 }
 
 const admissionInfo = admissionData as AdmissionDataset;
+const GEMINI_MODEL = "gemini-2.5-flash-lite";
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+const SYSTEM_PROMPT = `You are a university admission assistant for ${admissionInfo.university}.
+Only answer questions about:
+- Admission procedure
+- Courses
+- Fees
+- Eligibility
+- Admission dates and deadlines
+- Required documents
+- Contact details
+
+Use this data to answer:
+${JSON.stringify(admissionInfo)}
+
+If a question is out of scope, reply:
+"I can only help with university admission queries. Feel free to ask about procedure, courses, fees, eligibility, deadlines, required documents, or contact details!"
+
+Response rules:
+- Be friendly, concise, and use markdown formatting for readability.
+- Prefer bullet points for steps and lists.
+- When asked about process, provide the procedure in clear numbered steps.
+- When asked about deadlines, explicitly mention both start and end dates.
+- If data is unavailable in the provided dataset, clearly say it is not available and share contact details.`;
 
 const getLocalAdmissionReply = (query: string): string | null => {
   const q = query.toLowerCase();
@@ -132,6 +165,24 @@ const getLocalAdmissionReply = (query: string): string | null => {
 
 const WELCOME_MESSAGE = `Hi! 👋 I'm the **Meow University Admission Enquiries Assistant**.\n\nI can instantly help with **admission procedure, eligibility, deadlines, fees, and required documents**.`;
 
+const toGeminiHistory = (messages: Message[]) =>
+  messages
+    .filter((m) => !(m.role === "assistant" && m.content === WELCOME_MESSAGE))
+    .map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
+const extractGeminiText = (payload: GeminiResponse): string | null => {
+  const parts = payload?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return null;
+  const text = parts
+    .map((part: { text?: string }) => part?.text ?? "")
+    .join("")
+    .trim();
+  return text || null;
+};
+
 const ChatWindow = ({ onClose }: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: WELCOME_MESSAGE },
@@ -150,17 +201,6 @@ const ChatWindow = ({ onClose }: ChatWindowProps) => {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  const saveToHistory = useCallback(async (userMessage: string, botReply: string) => {
-    try {
-      await supabase.from("chat_history").insert({
-        user_message: userMessage,
-        bot_reply: botReply,
-      });
-    } catch (err) {
-      console.error("Failed to save chat:", err);
-    }
-  }, []);
-
   const sendMessage = async (content: string) => {
     if (isLoading) return;
 
@@ -172,7 +212,6 @@ const ChatWindow = ({ onClose }: ChatWindowProps) => {
     if (localReply) {
       const assistantMsg: Message = { role: "assistant", content: localReply };
       setMessages([...newMessages, assistantMsg]);
-      saveToHistory(content, localReply);
       return;
     }
 
@@ -181,26 +220,45 @@ const ChatWindow = ({ onClose }: ChatWindowProps) => {
     setIsLoading(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke("chat", {
-        body: {
-          messages: newMessages.filter(
-            (m) => !(m.role === "assistant" && m.content === WELCOME_MESSAGE)
-          ),
+      if (!GEMINI_API_KEY) {
+        throw new Error("VITE_GEMINI_API_KEY is not configured");
+      }
+
+      const geminiResponse = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          systemInstruction: {
+            role: "system",
+            parts: [{ text: SYSTEM_PROMPT }],
+          },
+          contents: toGeminiHistory(newMessages),
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1024,
+          },
+        }),
       });
 
-      if (error) throw error;
+      if (!geminiResponse.ok) {
+        const errorText = await geminiResponse.text();
+        throw new Error(`Gemini request failed (${geminiResponse.status}): ${errorText}`);
+      }
+
+      const data = await geminiResponse.json();
       if (activeRequestRef.current !== requestId) return;
 
-      const botReply = data?.reply || "Sorry, I couldn't process that request.";
+      const botReply = extractGeminiText(data) || "Sorry, I couldn't process that request.";
       const assistantMsg: Message = { role: "assistant", content: botReply };
       setMessages([...newMessages, assistantMsg]);
-      saveToHistory(content, botReply);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (activeRequestRef.current !== requestId) return;
 
       console.error("Chat error:", err);
-      const errorMsg = err?.message?.includes("429")
+      const errorMessage = err instanceof Error ? err.message : "";
+      const errorMsg = errorMessage.includes("429")
         ? "Rate limit reached. Please wait a moment."
         : "Something went wrong. Please try again.";
       toast.error(errorMsg);
